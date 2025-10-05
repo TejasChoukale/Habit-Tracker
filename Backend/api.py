@@ -1,13 +1,13 @@
-# api.py
 import os
 from dotenv import load_dotenv
 load_dotenv()
 
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 
 from fastapi import FastAPI, Depends, HTTPException, Header, status
 from fastapi.responses import PlainTextResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 
@@ -28,6 +28,7 @@ supabase_service: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 SUPABASE_REST = SUPABASE_URL.rstrip("/") + "/rest/v1"
 ANON_KEY = SUPABASE_ANON_KEY
 
+
 def supabase_headers_for_token(token: str) -> dict:
     """Headers required for PostgREST requests that respect RLS."""
     return {
@@ -37,8 +38,19 @@ def supabase_headers_for_token(token: str) -> dict:
         "Accept": "application/json"
     }
 
+
 # --- FastAPI app ---
 app = FastAPI(title="Habit Backend (REST)")
+
+# ✅ Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # allow localhost:3000 for frontend; restrict later in prod
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # Temporary debug exception handler (ok for local dev)
 @app.exception_handler(Exception)
@@ -48,26 +60,31 @@ async def debug_exception_handler(request, exc):
     print("DEBUG EXCEPTION:\n", tb)
     return PlainTextResponse(tb, status_code=500)
 
+
 # --- Pydantic models ---
 class HabitIn(BaseModel):
     name: str
     description: Optional[str] = None
     is_public: Optional[bool] = False
 
+
 class HabitOut(HabitIn):
     id: int
     user_id: str
     created_at: datetime
+
 
 class ProfileIn(BaseModel):
     username: Optional[str] = None
     avatar_url: Optional[str] = None
     bio: Optional[str] = None
 
+
 class ProfileOut(ProfileIn):
     id: str
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
 
 # --- Auth dependency ---
 def get_current_user(authorization: Optional[str] = Header(None)) -> Dict[str, str]:
@@ -83,7 +100,6 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> Dict[str, s
 
     try:
         user_resp = supabase_service.auth.get_user(token)
-        # normalize
         user = None
         if hasattr(user_resp, "user"):
             user = user_resp.user
@@ -103,30 +119,37 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> Dict[str, s
 
     return {"id": user_id, "token": token}
 
+
 # --- Helper functions that call PostgREST (REST) ---
 def get_user_habits_via_rest(user_token: str, user_id: str) -> list:
-    params = {"select": "*", "user_id": f"eq.{user_id}"}
-    # build query string manually (safe for our usage)
     url = f"{SUPABASE_REST}/habits?select=*&user_id=eq.{user_id}"
     resp = requests.get(url, headers=supabase_headers_for_token(user_token))
     if resp.status_code >= 400:
-        # raise HTTPError with body for better debugging
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
+
 
 def insert_habit_via_rest(user_token: str, payload: dict) -> dict:
     url = f"{SUPABASE_REST}/habits"
-    resp = requests.post(url, headers=supabase_headers_for_token(user_token), json=payload)
+    headers = supabase_headers_for_token(user_token)
+    headers["Prefer"] = "return=representation"
+    resp = requests.post(url, headers=headers, json=payload)
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    return resp.json()
+    data = resp.json()
+    return data[0] if isinstance(data, list) and data else data
+
 
 def update_habit_via_rest(user_token: str, habit_id: int, payload: dict, user_id: str):
     url = f"{SUPABASE_REST}/habits?id=eq.{habit_id}&user_id=eq.{user_id}"
-    resp = requests.patch(url, headers=supabase_headers_for_token(user_token), json=payload)
+    headers = supabase_headers_for_token(user_token)
+    headers["Prefer"] = "return=representation"
+    resp = requests.patch(url, headers=headers, json=payload)
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    return resp.json()
+    data = resp.json()
+    return data[0] if isinstance(data, list) and data else data
+
 
 def delete_habit_via_rest(user_token: str, habit_id: int, user_id: str):
     url = f"{SUPABASE_REST}/habits?id=eq.{habit_id}&user_id=eq.{user_id}"
@@ -135,12 +158,14 @@ def delete_habit_via_rest(user_token: str, habit_id: int, user_id: str):
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
 
+
 def list_public_habits_via_rest():
     url = f"{SUPABASE_REST}/habits?select=*&is_public=eq.true"
     resp = requests.get(url, headers={"apikey": ANON_KEY, "Accept": "application/json"})
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
+
 
 def get_profile_via_rest(user_token: str, user_id: str):
     url = f"{SUPABASE_REST}/profiles?id=eq.{user_id}"
@@ -150,16 +175,23 @@ def get_profile_via_rest(user_token: str, user_id: str):
     data = resp.json()
     return data[0] if isinstance(data, list) and data else None
 
+
 def upsert_profile_via_rest(user_token: str, data: dict):
     url = f"{SUPABASE_REST}/profiles"
-    resp = requests.post(url, headers=supabase_headers_for_token(user_token), json=data)
+    headers = supabase_headers_for_token(user_token)
+    headers["Prefer"] = "return=representation"
+    resp = requests.post(url, headers=headers, json=data)
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    return resp.json()
+    data = resp.json()
+    return data[0] if isinstance(data, list) and data else data
+
 
 # --- Habits endpoints ---
 @app.post("/habits", response_model=dict)
 def create_habit(user: Dict[str, str] = Depends(get_current_user), habit: HabitIn = None):
+    if not habit:
+        raise HTTPException(status_code=400, detail="Missing habit payload")
     token = user["token"]
     user_id = user["id"]
     payload = {
@@ -172,6 +204,7 @@ def create_habit(user: Dict[str, str] = Depends(get_current_user), habit: HabitI
     inserted = insert_habit_via_rest(token, payload)
     return {"ok": True, "data": inserted}
 
+
 @app.get("/habits", response_model=List[HabitOut])
 def list_private_habits(user: Dict[str, str] = Depends(get_current_user)):
     token = user["token"]
@@ -179,12 +212,16 @@ def list_private_habits(user: Dict[str, str] = Depends(get_current_user)):
     rows = get_user_habits_via_rest(token, user_id)
     return rows
 
+
 @app.get("/habits/public", response_model=List[HabitOut])
 def list_public_habits():
     return list_public_habits_via_rest()
 
+
 @app.put("/habits/{habit_id}", response_model=dict)
-def update_habit(habit_id: int, habit: HabitIn, user: Dict[str, str] = Depends(get_current_user)):
+def update_habit(habit_id: int, habit: HabitIn = None, user: Dict[str, str] = Depends(get_current_user)):
+    if not habit:
+        raise HTTPException(status_code=400, detail="Missing habit payload")
     token = user["token"]
     user_id = user["id"]
     payload = {
@@ -196,12 +233,14 @@ def update_habit(habit_id: int, habit: HabitIn, user: Dict[str, str] = Depends(g
     updated = update_habit_via_rest(token, habit_id, payload, user_id)
     return {"ok": True, "data": updated}
 
+
 @app.delete("/habits/{habit_id}", response_model=dict)
 def delete_habit(habit_id: int, user: Dict[str, str] = Depends(get_current_user)):
     token = user["token"]
     user_id = user["id"]
     deleted = delete_habit_via_rest(token, habit_id, user_id)
     return {"ok": True, "data": deleted}
+
 
 # --- Profiles endpoints ---
 @app.get("/profiles/me", response_model=ProfileOut)
@@ -212,6 +251,7 @@ def get_my_profile(user: Dict[str, str] = Depends(get_current_user)):
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     return profile
+
 
 @app.put("/profiles/me", response_model=dict)
 def upsert_my_profile(profile: ProfileIn, user: Dict[str, str] = Depends(get_current_user)):
