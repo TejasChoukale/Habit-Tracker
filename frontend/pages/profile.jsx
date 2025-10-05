@@ -12,14 +12,26 @@ export default function ProfilePage() {
     setLoading(true);
     try {
       const res = await apiGet("/profiles/me");
-      if (res)
+      if (res) {
         setProfile({
           username: res.username || "",
           avatar_url: res.avatar_url || "",
           bio: res.bio || "",
         });
+      }
     } catch (e) {
-      console.error("Profile load error:", e);
+      // 👇 Handle first-time users (no profile yet)
+      if (e.status === 404) {
+        try {
+          await apiPut("/profiles/me", { username: "", avatar_url: "", bio: "" });
+          return loadProfile(); // reload after creating empty profile
+        } catch (createErr) {
+          console.error("Auto-create profile failed:", createErr);
+        }
+      } else {
+        console.error("Profile load error:", e);
+        alert("Error loading profile: " + (e?.body?.detail || e.message));
+      }
     } finally {
       setLoading(false);
     }
@@ -38,7 +50,7 @@ export default function ProfilePage() {
         avatar_url: profile.avatar_url,
         bio: profile.bio,
       };
-      const res = await apiPut("/profiles/me", body);
+      await apiPut("/profiles/me", body);
       alert("Profile updated successfully!");
     } catch (err) {
       alert("Save failed: " + (err?.body?.detail || err?.message));
